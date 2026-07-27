@@ -51,7 +51,7 @@ jobs:
           SERVER_URL: ${{ secrets.SERVER_URL }} # [新增] 传递服务器面板链接
           IS_PROXY: ${{ env.IS_PROXY }}
           PROXY_SERVER: ${{ env.PROXY_SERVER }}
-        run:  python3 therose.py
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 therose.py
 
       - name: 📤 上传运行截图 (用于排错)
         if: always() # 无论成功或失败都会执行
