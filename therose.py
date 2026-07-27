@@ -13,7 +13,10 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID") or ""      # tg通知 chat_id id
 REMEMBER_COOKIE = os.environ.get("REMEMBER_COOKIE") or ""
 COOKIE_NAME = os.environ.get("COOKIE_NAME") or "REMEMBERME"
 
-# 目标服务器面板地址
+# client 计费面板服务页（Extend 与 Manage Server 按钮在此页）
+CLIENT_PANEL_URL = os.environ.get("CLIENT_PANEL_URL") or "https://client.therose.cloud/panel"
+
+# 目标服务器面板地址（仅作为 Manage Server 失败时的兜底直连）
 SERVER_URL = os.environ.get("SERVER_URL") or "https://panel.therose.cloud/server/b4335b9c"
 
 BASE_URL = "https://client.therose.cloud/login"
@@ -149,7 +152,7 @@ def send_tg(token, chat_id, message):
     except Exception as e:
         print(f"❌ Telegram 发送异常: {e}")
 
-# 获取 Turnstile token（读取 cf-turnstile-response 隐藏域的值）
+# 获取 Turnstile token（读取 cf-turnstile-response隐藏域的值）
 def get_turnstile_token(sb):
     js = ("(function(){"
           "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
@@ -217,11 +220,11 @@ def try_cookie_login(sb):
         except Exception as e:
             print(f"⚠️ 写入 cookie 失败: {e}")
             return False
-        # 带着 cookie 访问需要登录的页面，看是否被踢回登录页
+        # 带着 cookie 访问服务页，看是否被踢回登录页
         try:
-            sb.activate_cdp_mode("https://client.therose.cloud/panel")
+            sb.activate_cdp_mode(CLIENT_PANEL_URL)
         except Exception:
-            sb.open("https://client.therose.cloud/panel")
+            sb.open(CLIENT_PANEL_URL)
         sb.sleep(3)
         current_url = sb.get_current_url()
         if "login" not in current_url:
@@ -318,109 +321,117 @@ def login(sb, email, password):
     sb.save_screenshot("login_failed.png")
     return False, sb.get_current_url()
 
-# 执行重启服务器操作
-def reboot_server(sb, url):
-    print(f"🔄 准备进入服务器面板进行重启: {url}")
-    try:
-        sb.open(url)
-        sb.wait_for_ready_state_complete()
-        time.sleep(6)  # Pterodactyl 是 React 应用，按钮异步渲染，多等一会
-
-        # ==========================================
-        # 1. 处理 panel 需要独立登录的情况（与 client 面板是两套认证）
-        # ==========================================
-        if sb.is_element_visible('input[type="password"]'):
-            print("🔒 检测到 panel 需要独立登录，尝试自动输入账号密码...")
-            try:
-                if sb.is_element_visible('input[name="username"]'):
-                    sb.type('input[name="username"]', EMAIL)
-                elif sb.is_element_visible('input[name="user"]'):
-                    sb.type('input[name="user"]', EMAIL)
-                elif sb.is_element_visible('input[type="text"]'):
-                    sb.type('input[type="text"]', EMAIL)
-                sb.type('input[type="password"]', PASSWORD)
-                time.sleep(1)
+# 点击 client 面板的 Manage Server 按钮，SSO 跳转到 Pterodactyl 控制台
+def open_panel_via_manage(sb):
+    manage_selectors = [
+        'a:contains("Manage Server")',
+        'button:contains("Manage Server")',
+        'a:contains("Manage")',
+        'button:contains("Manage")',
+        'a[href*="panel.therose.cloud"]',
+    ]
+    for sel in manage_selectors:
+        try:
+            if sb.is_element_visible(sel):
+                print(f"✅ 找到 Manage Server 按钮，选择器: {sel}")
+                sb.uc_click(sel)
+                sb.sleep(6)
+                # 若在新标签页打开，切到最新窗口
                 try:
-                    sb.uc_gui_click_captcha()
+                    sb.switch_to_newest_window()
+                    sb.sleep(3)
                 except Exception:
                     pass
-                time.sleep(2)
-                try:
-                    sb.click('button:contains("Login")')
-                except Exception:
-                    sb.click('button[type="submit"]')
-                time.sleep(8)
-            except Exception as e:
-                print(f"⚠️ 自动登录 panel 发生错误: {e}")
+                print(f"🔀 已跳转，当前 URL: {sb.get_current_url()}")
+                return True
+        except Exception:
+            continue
+    print("⚠️ 未找到 Manage Server 按钮")
+    return False
 
-        # ==========================================
-        # 2. 若被重定向离开服务器详情页，强制再进一次
-        # ==========================================
-        current_url = sb.get_current_url()
-        if "/server/" not in current_url:
-            print("🔀 未停留在服务器详情页，强制重新进入...")
-            sb.open(url)
-            sb.wait_for_ready_state_complete()
-            time.sleep(6)
+# 点击控制台的 Restart 按钮
+def click_restart_button(sb):
+    # Pterodactyl 电源按钮是纯文字按钮：Start / Restart / Stop
+    restart_selectors = [
+        'button:contains("Restart")',
+        'button:contains("重启")',
+        'button[data-action="restart"]',
+        'button i.fa-redo',
+        'button i.fa-sync',
+    ]
+    for sel in restart_selectors:
+        try:
+            if sb.is_element_visible(sel):
+                print(f"✅ 找到重启按钮，选择器: {sel}")
+                sb.uc_click(sel)
+                return True
+        except Exception:
+            continue
 
-        sb.save_screenshot("reboot_page.png")  # 先存一张当前页面，方便排查
+    # JS 兜底：遍历所有按钮按文字匹配 Restart
+    print("⚠️ 常规选择器未命中，使用 JavaScript 按文字定位 Restart 按钮...")
+    try:
+        clicked = sb.execute_script("""
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
+                if (t === 'restart' || t.indexOf('restart') !== -1 || t.indexOf('重启') !== -1) {
+                    btns[i].click();
+                    return true;
+                }
+            }
+            return false;
+        """)
+        if clicked:
+            print("✅ 通过 JavaScript 成功点击 Restart 按钮")
+            return True
+    except Exception as ex:
+        print(f"⚠️ JS 兜底点击失败: {ex}")
+    return False
 
-        # ==========================================
-        # 3. 寻找并点击“Restart”按钮
-        # ==========================================
-        # Pterodactyl 电源按钮是纯文字按钮：Start / Restart / Stop
-        restart_selectors = [
-            'button:contains("Restart")',
-            'button:contains("重启")',
-            'button[data-action="restart"]',
-            'button i.fa-redo',
-            'button i.fa-sync',
-        ]
-
-        btn_clicked = False
-        for sel in restart_selectors:
+# 执行重启：通过 Manage Server SSO 进入控制台，再点 Restart
+def reboot_server(sb):
+    print("🔄 通过 Manage Server 进入控制台执行重启...")
+    try:
+        # 确保停留在 client 面板服务页（Extend 与 Manage Server 同页）
+        cur = sb.get_current_url()
+        if "client.therose.cloud" not in cur:
+            print(f"🔀 当前不在 client 面板（{cur}），重新打开服务页...")
             try:
-                if sb.is_element_visible(sel):
-                    print(f"✅ 找到重启按钮，选择器: {sel}")
-                    sb.uc_click(sel)
-                    btn_clicked = True
-                    break
+                sb.activate_cdp_mode(CLIENT_PANEL_URL)
             except Exception:
-                continue
+                sb.open(CLIENT_PANEL_URL)
+            sb.sleep(4)
 
-        # 方案B：JS 兜底，遍历所有按钮按文字匹配 Restart
-        if not btn_clicked:
-            print("⚠️ 常规选择器未命中，使用 JavaScript 按文字定位 Restart 按钮...")
+        # 点击 Manage Server → SSO 跳转控制台（绕过 panel 直连验证）
+        if not open_panel_via_manage(sb):
+            return False, "未找到 Manage Server 按钮（见reboot_no_manage.png）", "reboot_no_manage.png"
+
+        # 等待控制台加载（React 异步渲染）
+        sb.sleep(6)
+        sb.save_screenshot("reboot_page.png")
+
+        # 若没落在服务器详情页，兜底直连一次
+        if "/server/" not in sb.get_current_url():
+            print("🔀 SSO 后未落在服务器详情页，兜底直连 SERVER_URL...")
             try:
-                btn_clicked = sb.execute_script("""
-                    var btns = document.querySelectorAll('button');
-                    for (var i = 0; i < btns.length; i++) {
-                        var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
-                        if (t === 'restart' || t.indexOf('restart') !== -1 || t.indexOf('重启') !== -1) {
-                            btns[i].click();
-                            return true;
-                        }
-                    }
-                    return false;
-                """)
-                if btn_clicked:
-                    print("✅ 通过 JavaScript 成功点击 Restart 按钮")
-            except Exception as ex:
-                print(f"⚠️ JS 兜底点击失败: {ex}")
+                sb.open(SERVER_URL)
+                sb.wait_for_ready_state_complete()
+                sb.sleep(6)
+            except Exception:
+                pass
 
-        # ==========================================
-        # 4. 验证结果
-        # ==========================================
-        if btn_clicked:
+        # 点击 Restart
+        if click_restart_button(sb):
             print("⏳ 等待重启命令发送...")
             time.sleep(3)
-            return True, "已成功发送重启指令"
+            return True, "已成功发送重启指令", None
         else:
             sb.save_screenshot("reboot_no_button.png")
-            return False, "页面上未检测到 Restart 按钮（见 reboot_no_button.png）"
+            return False, "控制台上未检测到 Restart 按钮（见 reboot_no_button.png）", "reboot_no_button.png"
 
     except Exception as e:
-        return False, f"重启操作发生异常: {e}"
+        return False, f"重启操作发生异常: {e}", None
 
 # 主流程
 def main():
@@ -475,8 +486,7 @@ def main():
                 button = sb.find_element('button:contains("Order now")', timeout=5)
                 if button:
                     print("🛒 点击 Order now 按钮...")
-                    sb.uc_click('button:contains("Order now")')
-                else:
+                    sb.uc_click('button:contains("Order now")')else:
                     msg_renewal = "❌ 续期异常，未找到 Order now 按钮。"
                     print(msg_renewal)
             except Exception as e:
@@ -493,9 +503,9 @@ def main():
                 sb.save_screenshot("renewal_failed.png")
             print(msg_renewal)
 
-        # 重启逻辑 (与续期独立，均会执行)
+        # 重启逻辑 (与续期独立，均会执行)：通过 Manage Server SSO 进控制台
         print("🔄 开始检查并执行服务器重启...")
-        reboot_ok, reboot_msg = reboot_server(sb, SERVER_URL)
+        reboot_ok, reboot_msg, _ = reboot_server(sb)
         
         if reboot_ok:
             msg_reboot = f"✅ 自动重启成功: {reboot_msg}"
@@ -517,7 +527,7 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except Exception as e:
-        # 全局兜底：任何未捕获异常都发TG 通知，避免静默崩溃
+        # 全局兜底：任何未捕获异常都发 TG 通知，避免静默崩溃
         err_msg = f"❌ 脚本发生未预期异常: {e}"
         print(err_msg)
         send_tg(TG_BOT_TOKEN, TG_CHAT_ID, err_msg)
