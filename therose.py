@@ -135,7 +135,7 @@ def send_tg(token, chat_id, message):
                     proxies=REQUESTS_PROXIES,
                 )
             if resp.status_code == 200:
-                print("📨 Telegram 通知已发送（带 logo）")
+                print("📨Telegram 通知已发送（带logo）")
                 return
             else:
                 print(f"⚠️ 带 logo 发送失败，回退为纯文字: {resp.text}")
@@ -180,7 +180,7 @@ def wait_turnstile_token(sb, max_wait=30):
             print(f"✅ Turnstile token 已生成（长度 {len(token)}，前10位: {token[:10]}...）")
             return token
         elif i % 5 == 0:
-            print(f"⏳ token 仍为空，已等待 {i} 秒...")
+            print(f"⏳ token仍为空，已等待 {i} 秒...")
         time.sleep(1)
     print("❌ 等待超时，Turnstile token 始终未生成（验证未真正通过）")
     return ""
@@ -190,7 +190,7 @@ def solve_turnstile(sb, attempt=0):
     try:
         if attempt % 2 == 0:
             sb.uc_gui_click_captcha()
-            print("🛡 已尝试 uc_gui_click_captcha（鼠标坐标点击）")
+            print("🛡已尝试 uc_gui_click_captcha（鼠标坐标点击）")
         else:
             sb.uc_gui_handle_captcha()
             print("🛡 已尝试 uc_gui_handle_captcha（键盘 Tab+空格）")
@@ -405,7 +405,8 @@ def reboot_server(sb):
 
         # 点击 Manage Server → SSO 跳转控制台（绕过 panel 直连验证）
         if not open_panel_via_manage(sb):
-            return False, "未找到 Manage Server 按钮（见reboot_no_manage.png）", "reboot_no_manage.png"
+            sb.save_screenshot("reboot_no_manage.png")
+            return False, "未找到 Manage Server 按钮（见 reboot_no_manage.png）"
 
         # 等待控制台加载（React 异步渲染）
         sb.sleep(6)
@@ -425,13 +426,13 @@ def reboot_server(sb):
         if click_restart_button(sb):
             print("⏳ 等待重启命令发送...")
             time.sleep(3)
-            return True, "已成功发送重启指令", None
+            return True, "已成功发送重启指令"
         else:
             sb.save_screenshot("reboot_no_button.png")
-            return False, "控制台上未检测到 Restart 按钮（见 reboot_no_button.png）", "reboot_no_button.png"
+            return False, "控制台上未检测到 Restart 按钮（见 reboot_no_button.png）"
 
     except Exception as e:
-        return False, f"重启操作发生异常: {e}", None
+        return False, f"重启操作发生异常: {e}"
 
 # 主流程
 def main():
@@ -452,8 +453,7 @@ def main():
 
     print(f"🎯 当前出口IP: {current_ip}")
 
-    # xvfb=True 让 SeleniumBase 自己创建并管理虚拟显示器，
-    # uc_gui_click_captcha 的坐标才准确（不要在外层再套 xvfb-run）
+    # xvfb=True 让 SeleniumBase 自己创建并管理虚拟显示器
     sb_kwargs = {"uc": True, "headless": False, "xvfb": True}
     if IS_PROXY:
         sb_kwargs["proxy"] = PROXY_SERVER
@@ -486,7 +486,8 @@ def main():
                 button = sb.find_element('button:contains("Order now")', timeout=5)
                 if button:
                     print("🛒 点击 Order now 按钮...")
-                    sb.uc_click('button:contains("Order now")')else:
+                    sb.uc_click('button:contains("Order now")')
+                else:
                     msg_renewal = "❌ 续期异常，未找到 Order now 按钮。"
                     print(msg_renewal)
             except Exception as e:
@@ -505,7 +506,7 @@ def main():
 
         # 重启逻辑 (与续期独立，均会执行)：通过 Manage Server SSO 进控制台
         print("🔄 开始检查并执行服务器重启...")
-        reboot_ok, reboot_msg, _ = reboot_server(sb)
+        reboot_ok, reboot_msg = reboot_server(sb)
         
         if reboot_ok:
             msg_reboot = f"✅ 自动重启成功: {reboot_msg}"
@@ -517,9 +518,7 @@ def main():
         
         # 汇总发送通知
         final_msg = f"{msg_renewal}\n---\n{msg_reboot}"
-        send_tg(TG_BOT_TOKEN, TG_CHAT_ID, final_msg)
-
-    print("🏁 脚本执行完毕")
+        send_tg(TG_BOT_TOKEN, TG_CHAT_ID, final_msg)print("🏁 脚本执行完毕")
 
 if __name__ == "__main__":
     try:
