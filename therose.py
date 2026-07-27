@@ -29,7 +29,8 @@ if not EMAIL or not PASSWORD:
 
 # 获取当前出口IP（失败返回 None）
 def get_current_ip(proxy_server=None):
-    proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else Noneip_apis = ["https://api.ip.sb/ip", "https://ifconfig.me/ip", "https://api.ipify.org"]
+    proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else None
+    ip_apis = ["https://api.ip.sb/ip", "https://ifconfig.me/ip", "https://api.ipify.org"]
     for api in ip_apis:
         try:
             resp = requests.get(api, proxies=proxies, timeout=15)
