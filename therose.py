@@ -128,7 +128,7 @@ def send_tg(token, chat_id, message):
                     proxies=REQUESTS_PROXIES,
                 )
             if resp.status_code == 200:
-                print("📨Telegram 通知已发送（带 logo）")
+                print("📨 Telegram 通知已发送（带 logo）")
                 return
             else:
                 print(f"⚠️ 带 logo 发送失败，回退为纯文字: {resp.text}")
@@ -147,17 +147,15 @@ def send_tg(token, chat_id, message):
 
 # 获取 Turnstile token（读取 cf-turnstile-response 隐藏域的值）
 def get_turnstile_token(sb):
-    js = ("(function(){"
-          "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
-          "if (!el) { return '__NO_ELEMENT__'; }"
-          "return el.value || '';"
-          "})()")
     try:
-        return sb.cdp.evaluate(js)
-    except Exception:
-        pass
-    try:
-        return sb.execute_script(js)
+        # UC 模式底层是 CDP Runtime.evaluate，不能用裸 return，必须包成 IIFE
+        return sb.execute_script(
+            "(function(){"
+            "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
+            "if (!el) { return '__NO_ELEMENT__'; }"
+            "return el.value || '';"
+            "})()"
+        )
     except Exception as e:
         print(f"⚠️ 读取 token 异常: {e}")
         return ""
@@ -173,13 +171,24 @@ def wait_turnstile_token(sb, max_wait=30):
             print(f"✅ Turnstile token 已生成（长度 {len(token)}，前10位: {token[:10]}...）")
             return token
         elif i % 5 == 0:
-            print(f"⏳ token仍为空，已等待 {i} 秒...")
+            print(f"⏳ token 仍为空，已等待 {i} 秒...")
         time.sleep(1)
     print("❌ 等待超时，Turnstile token 始终未生成（验证未真正通过）")
     return ""
 
 # 处理 Turnstile：鼠标点击与键盘 Tab+空格两种方式交替尝试
 def solve_turnstile(sb, attempt=0):
+    try:
+        # 先把 widget 滚动到视口内，避免 pyautogui 坐标偏差
+        sb.execute_script(
+            "(function(){"
+            "var el = document.querySelector('.cf-turnstile, [name=\"cf-turnstile-response\"]');"
+            "if (el) { el.scrollIntoView({block: 'center'}); }"
+            "})()"
+        )
+        time.sleep(1)
+    except Exception:
+        pass
     try:
         if attempt % 2 == 0:
             sb.uc_gui_click_captcha()
@@ -195,7 +204,8 @@ def open_login_page(sb, retries=3):
     for i in range(retries):
         print(f"🌐 打开登录页面...(第 {i + 1}/{retries} 次)")
         try:
-            sb.activate_cdp_mode(BASE_URL)
+            sb.open(BASE_URL)
+            sb.wait_for_ready_state_complete()
             sb.sleep(2)
             if sb.is_element_visible('#login_form_email'):
                 return True
@@ -333,7 +343,7 @@ def reboot_server(sb, url):
         
         btn_clicked = False
         
-        # 方案 A: 通过常规 CSS 选择器点击
+        # 方案A: 通过常规 CSS 选择器点击
         for sel in reboot_selectors:
             try:
                 if sb.is_element_visible(sel):
@@ -410,9 +420,7 @@ def main():
 
     print(f"🎯 当前出口IP: {current_ip}")
 
-    # xvfb=True 让 SeleniumBase 自己创建并管理虚拟显示器，
-    # uc_gui_click_captcha 的坐标才准确（不要在外层再套 xvfb-run）
-    sb_kwargs = {"uc": True, "headless": False, "xvfb": True}
+    sb_kwargs = {"uc": True, "headless": False}
     if IS_PROXY:
         sb_kwargs["proxy"] = PROXY_SERVER
 
