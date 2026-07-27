@@ -10,7 +10,8 @@ TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""  # tg通知 bot token
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID") or ""      # tg通知 chat_id id
 
 # 目标服务器面板地址
-SERVER_URL = os.environ.get("SERVER_URL") or "https://panel.therose.cloud/server/9059348a"
+SERVER_URL = os.environ.get("SERVER_URL") or "https://panel.therose.cloud/server/b4335b9c"
+
 BASE_URL = "https://client.therose.cloud/login"
 
 # logo 图片路径
