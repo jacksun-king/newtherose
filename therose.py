@@ -137,10 +137,13 @@ def send_tg(token, chat_id, message):
 # 获取 Turnstile token（读取 cf-turnstile-response 隐藏域的值）
 def get_turnstile_token(sb):
     try:
+        # UC 模式底层是 CDP Runtime.evaluate，不能用裸 return，必须包成 IIFE
         return sb.execute_script(
+            "(function(){"
             "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
             "if (!el) { return '__NO_ELEMENT__'; }"
             "return el.value || '';"
+            "})()"
         )
     except Exception as e:
         print(f"⚠️ 读取 token 异常: {e}")
@@ -162,6 +165,29 @@ def wait_turnstile_token(sb, max_wait=30):
     print("❌ 等待超时，Turnstile token 始终未生成（验证未真正通过）")
     return ""
 
+# 处理 Turnstile：鼠标点击与键盘 Tab+空格两种方式交替尝试
+def solve_turnstile(sb, attempt=0):
+    try:
+        # 先把widget 滚动到视口内，避免 pyautogui 坐标偏差
+        sb.execute_script(
+            "(function(){"
+            "var el = document.querySelector('.cf-turnstile, [name=\"cf-turnstile-response\"]');"
+            "if (el) { el.scrollIntoView({block: 'center'}); }"
+            "})()"
+        )
+        time.sleep(1)
+    except Exception:
+        pass
+    try:
+        if attempt % 2 == 0:
+            sb.uc_gui_click_captcha()
+            print("🛡 已尝试 uc_gui_click_captcha（鼠标坐标点击）")
+        else:
+            sb.uc_gui_handle_captcha()
+            print("🛡 已尝试 uc_gui_handle_captcha（键盘 Tab+空格）")
+    except Exception as e:
+        print(f"⚠️ 处理 Turnstile 异常: {e}")
+
 # 登录流程
 def login(sb, email, password):
     print("🌐 打开登录页面...")
@@ -174,23 +200,16 @@ def login(sb, email, password):
     sb.type('#login_form_password', password, timeout=10)
     time.sleep(1) 
     print("🛡 处理 Turnstile...")
-    try:
-        sb.uc_gui_click_captcha()
-        print("✅ Turnstile 验证已处理")
-    except Exception as e:
-        print(f"⚠️ uc_gui_click_captcha 执行异常: {e}")
-        
+    solve_turnstile(sb, attempt=0)
+
     print("⏳ 等待验证 token 生成...")
-    token = wait_turnstile_token(sb, max_wait=30)
+    token = wait_turnstile_token(sb, max_wait=25)
 
     for attempt in range(5):
-        # token 为空则先重新处理 Turnstile，不要盲目点登录
+        # token 为空则先重新处理 Turnstile（交替鼠标/键盘方式），不要盲目点登录
         if not token:
             print(f"🛡 token 为空，重新处理 Turnstile...(第 {attempt + 1} 次)")
-            try:
-                sb.uc_gui_click_captcha()
-            except Exception as e:
-                print(f"⚠️ uc_gui_click_captcha 执行异常: {e}")
+            solve_turnstile(sb, attempt=attempt + 1)
             token = wait_turnstile_token(sb, max_wait=20)
             if not token:
                 sb.save_screenshot(f"turnstile_empty_{attempt + 1}.png")
