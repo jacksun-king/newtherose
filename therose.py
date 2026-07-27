@@ -518,7 +518,8 @@ def main():
         
         # 汇总发送通知
         final_msg = f"{msg_renewal}\n---\n{msg_reboot}"
-        send_tg(TG_BOT_TOKEN, TG_CHAT_ID, final_msg)print("🏁 脚本执行完毕")
+        send_tg(TG_BOT_TOKEN, TG_CHAT_ID, final_msg)
+        print("🏁 脚本执行完毕")
 
 if __name__ == "__main__":
     try:
