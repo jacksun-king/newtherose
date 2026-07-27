@@ -132,7 +132,7 @@ def send_tg(token, chat_id, message):
                     proxies=REQUESTS_PROXIES,
                 )
             if resp.status_code == 200:
-                print("📨Telegram 通知已发送（带 logo）")
+                print("📨 Telegram 通知已发送（带 logo）")
                 return
             else:
                 print(f"⚠️ 带 logo 发送失败，回退为纯文字: {resp.text}")
@@ -324,65 +324,61 @@ def reboot_server(sb, url):
     try:
         sb.open(url)
         sb.wait_for_ready_state_complete()
-        time.sleep(5) # 给面板一点时间加载状态
-        
+        time.sleep(6)  # Pterodactyl 是 React 应用，按钮异步渲染，多等一会
+
         # ==========================================
-        # 1. 处理控制面板需要独立登录的情况
+        # 1. 处理 panel 需要独立登录的情况（与 client 面板是两套认证）
         # ==========================================
         if sb.is_element_visible('input[type="password"]'):
-            print("🔒 检测到控制面板需要独立登录，正在尝试自动输入账号密码...")
+            print("🔒 检测到 panel 需要独立登录，尝试自动输入账号密码...")
             try:
-                # 输入账号 (兼容不同的输入框 name 属性)
-                if sb.is_element_visible('input[name="user"]'):
+                if sb.is_element_visible('input[name="username"]'):
+                    sb.type('input[name="username"]', EMAIL)
+                elif sb.is_element_visible('input[name="user"]'):
                     sb.type('input[name="user"]', EMAIL)
                 elif sb.is_element_visible('input[type="text"]'):
                     sb.type('input[type="text"]', EMAIL)
-                
-                # 输入密码
                 sb.type('input[type="password"]', PASSWORD)
                 time.sleep(1)
-                
-                # 尝试处理人机验证 (如果存在)
                 try:
                     sb.uc_gui_click_captcha()
                 except Exception:
-                    pass # 如果没有验证码或点击报错，则直接跳过
-                
-                time.sleep(3) 
-                
-                # 点击登录按钮
+                    pass
+                time.sleep(2)
                 try:
                     sb.click('button:contains("Login")')
                 except Exception:
                     sb.click('button[type="submit"]')
-                    
-                time.sleep(8) # 等待登录完成并跳转
+                time.sleep(8)
             except Exception as e:
-                print(f"⚠️ 自动登录控制面板发生错误: {e}")
-        
+                print(f"⚠️ 自动登录 panel 发生错误: {e}")
+
         # ==========================================
-        # 2. 检查是否被重定向到主页，如果是则强制返回详情页
+        # 2. 若被重定向离开服务器详情页，强制再进一次
         # ==========================================
         current_url = sb.get_current_url()
         if "/server/" not in current_url:
-            print("🔀 检测到停留在主列表页，正在强制进入目标服务器控制台...")
+            print("🔀 未停留在服务器详情页，强制重新进入...")
             sb.open(url)
             sb.wait_for_ready_state_complete()
             time.sleep(6)
 
+        sb.save_screenshot("reboot_page.png")  # 先存一张当前页面，方便排查
+
         # ==========================================
-        # 3. 寻找并点击“重启”按钮
+        # 3. 寻找并点击“Restart”按钮
         # ==========================================
-        reboot_selectors = [
+        # Pterodactyl 电源按钮是纯文字按钮：Start / Restart / Stop
+        restart_selectors = [
+            'button:contains("Restart")',
+            'button:contains("重启")',
             'button[data-action="restart"]',
             'button i.fa-redo',
-            'button i.fa-sync'
+            'button i.fa-sync',
         ]
-        
+
         btn_clicked = False
-        
-        # 方案 A: 通过常规 CSS 选择器点击
-        for sel in reboot_selectors:
+        for sel in restart_selectors:
             try:
                 if sb.is_element_visible(sel):
                     print(f"✅ 找到重启按钮，选择器: {sel}")
@@ -391,40 +387,27 @@ def reboot_server(sb, url):
                     break
             except Exception:
                 continue
-                
-        # 方案 B: 降级方案（JS 直接定位右上角的中间按钮）
+
+        # 方案B：JS 兜底，遍历所有按钮按文字匹配 Restart
         if not btn_clicked:
-            print("⚠️ 未能通过常规选择器找到按钮，正在使用 JavaScript 定位中间的重启按钮...")
+            print("⚠️ 常规选择器未命中，使用 JavaScript 按文字定位 Restart 按钮...")
             try:
-                btn_clicked = sb.driver.execute_script("""
-                    const buttons = document.querySelectorAll('div.flex.items-center button, div.items-center button');
-                    
-                    // 1. 先尝试通过特征匹配
-                    for (let btn of buttons) {
-                        if (btn.getAttribute('data-action') === 'restart' || 
-                            btn.innerHTML.includes('fa-redo') || 
-                            btn.innerHTML.includes('fa-sync')) {
-                            btn.click();
+                btn_clicked = sb.execute_script("""
+                    var btns = document.querySelectorAll('button');
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || btns[i].textContent || '').trim().toLowerCase();
+                        if (t === 'restart' || t.indexOf('restart') !== -1 || t.indexOf('重启') !== -1) {
+                            btns[i].click();
                             return true;
                         }
-                    }
-                    
-                    // 2. 如果特征匹配失败，直接点击三个按钮中的中间那一个 (索引为 1)
-                    if (buttons.length >= 3) {
-                        buttons[1].click(); 
-                        return true;
-                    } else if (buttons.length >= 2) {
-                        // 如果只有两个按钮，通常是 启动 和 重启，重启在最后
-                        buttons[buttons.length - 1].click();
-                        return true;
                     }
                     return false;
                 """)
                 if btn_clicked:
-                    print("✅ 通过 JavaScript 成功点击了中间的重启按钮")
+                    print("✅ 通过 JavaScript 成功点击 Restart 按钮")
             except Exception as ex:
-                print(f"⚠️ JS 降级点击失败: {ex}")
-                
+                print(f"⚠️ JS 兜底点击失败: {ex}")
+
         # ==========================================
         # 4. 验证结果
         # ==========================================
@@ -433,10 +416,10 @@ def reboot_server(sb, url):
             time.sleep(3)
             return True, "已成功发送重启指令"
         else:
-            return False, "页面上未检测到重启按钮"
-            
+            sb.save_screenshot("reboot_no_button.png")
+            return False, "页面上未检测到 Restart 按钮（见 reboot_no_button.png）"
+
     except Exception as e:
-        # 这个 except 捕获最外层 try 的异常，防止语法错误
         return False, f"重启操作发生异常: {e}"
 
 # 主流程
