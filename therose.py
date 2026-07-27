@@ -9,6 +9,10 @@ PASSWORD = os.environ.get("PASSWORD") or ""      # 密码
 TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""  # tg通知 bot token
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID") or ""      # tg通知 chat_id id
 
+# Cookie 直登（绕过 Turnstile）：手动登录后从浏览器复制 REMEMBERME cookie 值
+REMEMBER_COOKIE = os.environ.get("REMEMBER_COOKIE") or ""
+COOKIE_NAME = os.environ.get("COOKIE_NAME") or "REMEMBERME"
+
 # 目标服务器面板地址
 SERVER_URL = os.environ.get("SERVER_URL") or "https://panel.therose.cloud/server/b4335b9c"
 
@@ -128,7 +132,7 @@ def send_tg(token, chat_id, message):
                     proxies=REQUESTS_PROXIES,
                 )
             if resp.status_code == 200:
-                print("📨 Telegram 通知已发送（带 logo）")
+                print("📨Telegram 通知已发送（带 logo）")
                 return
             else:
                 print(f"⚠️ 带 logo 发送失败，回退为纯文字: {resp.text}")
@@ -147,15 +151,17 @@ def send_tg(token, chat_id, message):
 
 # 获取 Turnstile token（读取 cf-turnstile-response 隐藏域的值）
 def get_turnstile_token(sb):
+    js = ("(function(){"
+          "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
+          "if (!el) { return '__NO_ELEMENT__'; }"
+          "return el.value || '';"
+          "})()")
     try:
-        # UC 模式底层是 CDP Runtime.evaluate，不能用裸 return，必须包成 IIFE
-        return sb.execute_script(
-            "(function(){"
-            "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
-            "if (!el) { return '__NO_ELEMENT__'; }"
-            "return el.value || '';"
-            "})()"
-        )
+        return sb.cdp.evaluate(js)
+    except Exception:
+        pass
+    try:
+        return sb.execute_script(js)
     except Exception as e:
         print(f"⚠️ 读取 token 异常: {e}")
         return ""
@@ -179,17 +185,6 @@ def wait_turnstile_token(sb, max_wait=30):
 # 处理 Turnstile：鼠标点击与键盘 Tab+空格两种方式交替尝试
 def solve_turnstile(sb, attempt=0):
     try:
-        # 先把 widget 滚动到视口内，避免 pyautogui 坐标偏差
-        sb.execute_script(
-            "(function(){"
-            "var el = document.querySelector('.cf-turnstile, [name=\"cf-turnstile-response\"]');"
-            "if (el) { el.scrollIntoView({block: 'center'}); }"
-            "})()"
-        )
-        time.sleep(1)
-    except Exception:
-        pass
-    try:
         if attempt % 2 == 0:
             sb.uc_gui_click_captcha()
             print("🛡 已尝试 uc_gui_click_captcha（鼠标坐标点击）")
@@ -199,13 +194,51 @@ def solve_turnstile(sb, attempt=0):
     except Exception as e:
         print(f"⚠️ 处理 Turnstile 异常: {e}")
 
+# Cookie 直登：注入 REMEMBERME cookie 绕过 Turnstile，成功返回 True
+def try_cookie_login(sb):
+    if not REMEMBER_COOKIE:
+        return False
+    print("🍪 检测到 REMEMBER_COOKIE，尝试 Cookie 直登（绕过 Turnstile）...")
+    try:
+        # 先打开同域页面，才能写入该域名的 cookie
+        try:
+            sb.activate_cdp_mode("https://client.therose.cloud/")
+        except Exception:
+            sb.open("https://client.therose.cloud/")
+        sb.sleep(2)
+        try:
+            sb.add_cookie({
+                "name": COOKIE_NAME,
+                "value": REMEMBER_COOKIE,
+                "domain": ".therose.cloud",
+                "path": "/",
+                "secure": True,
+            })
+        except Exception as e:
+            print(f"⚠️ 写入 cookie 失败: {e}")
+            return False
+        # 带着 cookie 访问需要登录的页面，看是否被踢回登录页
+        try:
+            sb.activate_cdp_mode("https://client.therose.cloud/panel")
+        except Exception:
+            sb.open("https://client.therose.cloud/panel")
+        sb.sleep(3)
+        current_url = sb.get_current_url()
+        if "login" not in current_url:
+            print(f"✅ Cookie 直登成功！当前页面: {current_url}")
+            return True
+        print("⚠️ Cookie 已失效或未生效（被重定向回登录页），回退到账号密码登录...")
+        return False
+    except Exception as e:
+        print(f"⚠️ Cookie 直登异常: {e}，回退到账号密码登录...")
+        return False
+
 # 打开登录页并等待表单出现（带重试，防止代理不稳导致页面加载失败直接崩溃）
 def open_login_page(sb, retries=3):
     for i in range(retries):
         print(f"🌐 打开登录页面...(第 {i + 1}/{retries} 次)")
         try:
-            sb.open(BASE_URL)
-            sb.wait_for_ready_state_complete()
+            sb.activate_cdp_mode(BASE_URL)
             sb.sleep(2)
             if sb.is_element_visible('#login_form_email'):
                 return True
@@ -222,6 +255,11 @@ def open_login_page(sb, retries=3):
 
 # 登录流程
 def login(sb, email, password):
+    # 方式一：Cookie 直登（完全绕过 Turnstile，优先）
+    if try_cookie_login(sb):
+        return True, sb.get_current_url()
+
+    # 方式二：账号密码 + Turnstile（回退方案）
     if not open_login_page(sb):
         print("❌ 登录页面加载失败（多为代理不通或被 CF 整页拦截，见截图）")
         return False, "PAGE_LOAD_FAILED"
@@ -343,7 +381,7 @@ def reboot_server(sb, url):
         
         btn_clicked = False
         
-        # 方案A: 通过常规 CSS 选择器点击
+        # 方案 A: 通过常规 CSS 选择器点击
         for sel in reboot_selectors:
             try:
                 if sb.is_element_visible(sel):
@@ -420,7 +458,9 @@ def main():
 
     print(f"🎯 当前出口IP: {current_ip}")
 
-    sb_kwargs = {"uc": True, "headless": False}
+    # xvfb=True 让 SeleniumBase 自己创建并管理虚拟显示器，
+    # uc_gui_click_captcha 的坐标才准确（不要在外层再套 xvfb-run）
+    sb_kwargs = {"uc": True, "headless": False, "xvfb": True}
     if IS_PROXY:
         sb_kwargs["proxy"] = PROXY_SERVER
 
@@ -431,7 +471,7 @@ def main():
             if url == "PAGE_LOAD_FAILED":
                 msg = "❌ 登录页面加载失败（代理不稳或被 CF 拦截），本次跳过，详见运行截图。"
             else:
-                msg = "❌ 登录失败，请检查账号密码或验证码拦截情况。"
+                msg = "❌ 登录失败：Turnstile 未通过或 Cookie 已失效，请重新手动登录更新 REMEMBER_COOKIE。"
             print(msg)
             send_tg(TG_BOT_TOKEN, TG_CHAT_ID, msg)
             return
