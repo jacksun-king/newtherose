@@ -134,6 +134,34 @@ def send_tg(token, chat_id, message):
     except Exception as e:
         print(f"❌ Telegram 发送异常: {e}")
 
+# 获取 Turnstile token（读取 cf-turnstile-response 隐藏域的值）
+def get_turnstile_token(sb):
+    try:
+        return sb.execute_script(
+            "var el = document.querySelector('[name=\"cf-turnstile-response\"]');"
+            "if (!el) { return '__NO_ELEMENT__'; }"
+            "return el.value || '';"
+        )
+    except Exception as e:
+        print(f"⚠️ 读取 token 异常: {e}")
+        return ""
+
+# 轮询等待 Turnstile token 生成，最多等 max_wait 秒
+def wait_turnstile_token(sb, max_wait=30):
+    for i in range(max_wait):
+        token = get_turnstile_token(sb)
+        if token == "__NO_ELEMENT__":
+            if i % 5 == 0:
+                print(f"⚠️ 页面上没有 cf-turnstile-response 隐藏域（widget 未渲染？），已等待 {i} 秒...")
+        elif token:
+            print(f"✅ Turnstile token 已生成（长度 {len(token)}，前10位: {token[:10]}...）")
+            return token
+        elif i % 5 == 0:
+            print(f"⏳ token 仍为空，已等待 {i} 秒...")
+        time.sleep(1)
+    print("❌ 等待超时，Turnstile token 始终未生成（验证未真正通过）")
+    return ""
+
 # 登录流程
 def login(sb, email, password):
     print("🌐 打开登录页面...")
@@ -152,10 +180,22 @@ def login(sb, email, password):
     except Exception as e:
         print(f"⚠️ uc_gui_click_captcha 执行异常: {e}")
         
-    print("⏳ 等待验证 token 生效...")
-    sb.sleep(20)
+    print("⏳ 等待验证 token 生成...")
+    token = wait_turnstile_token(sb, max_wait=30)
 
     for attempt in range(5):
+        # token 为空则先重新处理 Turnstile，不要盲目点登录
+        if not token:
+            print(f"🛡 token 为空，重新处理 Turnstile...(第 {attempt + 1} 次)")
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception as e:
+                print(f"⚠️ uc_gui_click_captcha 执行异常: {e}")
+            token = wait_turnstile_token(sb, max_wait=20)
+            if not token:
+                sb.save_screenshot(f"turnstile_empty_{attempt + 1}.png")
+                continue
+
         print(f"🔑 点击登录按钮...(第 {attempt + 1} 次)")
         try:
             sb.uc_click('button:contains("Sign in")')
@@ -179,7 +219,11 @@ def login(sb, email, password):
                     return False, sb.get_current_url()
         except Exception:
             pass
-        print("⚠️ 未跳转，可能是点击未生效或 token 还未就绪，准备重试...")
+        # 提交失败后 token 可能已被消耗/过期，重新读取，为空则下一轮会重新触发验证
+        token = get_turnstile_token(sb)
+        if token == "__NO_ELEMENT__":
+            token = ""
+        print(f"⚠️ 未跳转（当前 token: {'有，长度' + str(len(token)) if token else '空'}），准备重试...")
 
     print(f"❌ 登录失败，当前 URL: {sb.get_current_url()}")
     sb.save_screenshot("login_failed.png")
@@ -329,7 +373,7 @@ def main():
             print(msg)
             send_tg(TG_BOT_TOKEN, TG_CHAT_ID, msg)
             return
-
+        
         print("📄 开始续期流程...")
         ok, info = click_extend_button(sb)
         
