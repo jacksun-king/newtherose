@@ -47,9 +47,9 @@ def click_extend_button(sb):
     ]
     for sel in selectors:
         try:
-            if sb.find_element(sel, timeout=2):
+            if sb.find_element(sel, timeout=40):
                 print(f"✅ 找到按钮，选择器: {sel}")
-                sb.uc_click(sel, timeout=5)
+                sb.uc_click(sel, timeout=100)
                 print("✅ 点击成功")
                 return True, {}
         except:
