@@ -153,9 +153,9 @@ def login(sb, email, password):
         print(f"⚠️ uc_gui_click_captcha 执行异常: {e}")
         
     print("⏳ 等待验证 token 生效...")
-    sb.sleep(5)
+    sb.sleep(20)
 
-    for attempt in range(10):
+    for attempt in range(5):
         print(f"🔑 点击登录按钮...(第 {attempt + 1} 次)")
         try:
             sb.uc_click('button:contains("Sign in")')
