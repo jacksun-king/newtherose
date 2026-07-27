@@ -27,17 +27,27 @@ if not EMAIL or not PASSWORD:
     print("❌ 请设置环境变量 EMAIL 和 PASSWORD")
     sys.exit(1)
 
-# 获取当前出口IP
+# 获取当前出口IP（失败返回 None）
 def get_current_ip(proxy_server=None):
-    proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else None
-    try:
-        resp = requests.get("https://api.ip.sb/ip", proxies=proxies, timeout=15)
-        if resp.status_code == 200:
-            return resp.text.strip()
-        return "获取失败"
-    except Exception as e:
-        print(f"❌ 获取出口IP失败: {e}")
-        return "获取失败"
+    proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else Noneip_apis = ["https://api.ip.sb/ip", "https://ifconfig.me/ip", "https://api.ipify.org"]
+    for api in ip_apis:
+        try:
+            resp = requests.get(api, proxies=proxies, timeout=15)
+            if resp.status_code == 200:
+                return resp.text.strip()
+        except Exception as e:
+            print(f"⚠️ 通过 {api} 获取出口IP失败: {e}")
+    return None
+
+# 代理健康检查：重试多次，全部失败说明代理不可用
+def check_proxy_health(retries=3, interval=10):
+    for i in range(retries):
+        ip = get_current_ip(PROXY_SERVER)
+        if ip:
+            return ip
+        print(f"⚠️ 代理连通性检查失败（第 {i + 1}/{retries} 次），{interval} 秒后重试...")
+        time.sleep(interval)
+    return None
 
 # 点击续期按钮
 def click_extend_button(sb):
@@ -168,7 +178,7 @@ def wait_turnstile_token(sb, max_wait=30):
 # 处理 Turnstile：鼠标点击与键盘 Tab+空格两种方式交替尝试
 def solve_turnstile(sb, attempt=0):
     try:
-        # 先把widget 滚动到视口内，避免 pyautogui 坐标偏差
+        # 先把 widget 滚动到视口内，避免 pyautogui 坐标偏差
         sb.execute_script(
             "(function(){"
             "var el = document.querySelector('.cf-turnstile, [name=\"cf-turnstile-response\"]');"
@@ -188,12 +198,33 @@ def solve_turnstile(sb, attempt=0):
     except Exception as e:
         print(f"⚠️ 处理 Turnstile 异常: {e}")
 
+# 打开登录页并等待表单出现（带重试，防止代理不稳导致页面加载失败直接崩溃）
+def open_login_page(sb, retries=3):
+    for i in range(retries):
+        print(f"🌐 打开登录页面...(第 {i + 1}/{retries} 次)")
+        try:
+            sb.open(BASE_URL)
+            sb.wait_for_ready_state_complete()
+            sb.sleep(2)
+            if sb.is_element_visible('#login_form_email'):
+                return True
+            print(f"⚠️ 页面已打开但未见登录表单，当前 URL: {sb.get_current_url()}")
+            sb.save_screenshot(f"login_page_error_{i + 1}.png")
+        except Exception as e:
+            print(f"⚠️ 打开登录页异常: {e}")
+            try:
+                sb.save_screenshot(f"login_page_error_{i + 1}.png")
+            except Exception:
+                pass
+        time.sleep(5)
+    return False
+
 # 登录流程
 def login(sb, email, password):
-    print("🌐 打开登录页面...")
-    sb.open(BASE_URL)
-    sb.wait_for_ready_state_complete()
-    sb.sleep(1)
+    if not open_login_page(sb):
+        print("❌ 登录页面加载失败（多为代理不通或被 CF 整页拦截，见截图）")
+        return False, "PAGE_LOAD_FAILED"
+
     print("📧 填写邮箱...")
     sb.type('#login_form_email', email, timeout=10)
     print("🔑 填写密码...")
@@ -311,7 +342,7 @@ def reboot_server(sb, url):
         
         btn_clicked = False
         
-        # 方案 A: 通过常规 CSS 选择器点击
+        # 方案A: 通过常规 CSS 选择器点击
         for sel in reboot_selectors:
             try:
                 if sb.is_element_visible(sel):
@@ -368,16 +399,24 @@ def reboot_server(sb, url):
     except Exception as e:
         # 这个 except 捕获最外层 try 的异常，防止语法错误
         return False, f"重启操作发生异常: {e}"
+
 # 主流程
 def main():
     print("🚀 启动浏览器")
 
     if IS_PROXY:
         print(f"⚙️ 代理已启用: {PROXY_SERVER}")
+        # 代理健康检查：代理不通就没必要继续跑，直接通知并退出
+        current_ip = check_proxy_health(retries=3, interval=10)
+        if not current_ip:
+            msg = "❌ 代理连通性检查失败（多次无法通过代理访问外网），本次任务终止，请检查代理节点。"
+            print(msg)
+            send_tg(TG_BOT_TOKEN, TG_CHAT_ID, msg)
+            sys.exit(1)
     else:
         print("🌐 直连模式（未使用代理）")
+        current_ip = get_current_ip() or "获取失败"
 
-    current_ip = get_current_ip(PROXY_SERVER)
     print(f"🎯 当前出口IP: {current_ip}")
 
     sb_kwargs = {"uc": True, "headless": False}
@@ -388,7 +427,10 @@ def main():
         success, url = login(sb, EMAIL, PASSWORD)
         
         if not success:
-            msg = f"❌ 登录失败，请检查账号密码或验证码拦截情况。"
+            if url == "PAGE_LOAD_FAILED":
+                msg = "❌ 登录页面加载失败（代理不稳或被 CF 拦截），本次跳过，详见运行截图。"
+            else:
+                msg = "❌ 登录失败，请检查账号密码或验证码拦截情况。"
             print(msg)
             send_tg(TG_BOT_TOKEN, TG_CHAT_ID, msg)
             return
@@ -446,4 +488,13 @@ def main():
     print("🏁 脚本执行完毕")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # 全局兜底：任何未捕获异常都发TG 通知，避免静默崩溃
+        err_msg = f"❌ 脚本发生未预期异常: {e}"
+        print(err_msg)
+        send_tg(TG_BOT_TOKEN, TG_CHAT_ID, err_msg)
+        sys.exit(1)
