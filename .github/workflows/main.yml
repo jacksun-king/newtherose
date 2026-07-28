@@ -3,7 +3,7 @@ name: Auto Renew therose
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/45 * * * *'
+    - cron: '*/20 * * * *'
 
 # 限制并发运行：如果当前有正在运行的相同工作流，则取消旧的运行新任务
 concurrency:
